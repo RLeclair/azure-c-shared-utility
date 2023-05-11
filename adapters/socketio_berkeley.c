@@ -288,9 +288,7 @@ static int initiate_socket_connection(SOCKET_IO_INSTANCE* socket_io_instance)
     int result;
     int flags;
     struct addrinfo* addr = NULL;
-    struct sockaddr* connect_addr = NULL;
     struct sockaddr_un addrInfoUn;
-    socklen_t connect_addr_len;
 
     if(socket_io_instance->address_type == ADDRESS_TYPE_IP)
     {
@@ -307,11 +305,9 @@ static int initiate_socket_connection(SOCKET_IO_INSTANCE* socket_io_instance)
             {
                 LogError("DNS resolution failed");
                 result = MU_FAILURE;
-            }
-            else
+            } 
+            else 
             {
-                connect_addr = addr->ai_addr;
-                connect_addr_len = sizeof(*addr->ai_addr);
                 result = 0;
             }
         }
@@ -330,12 +326,31 @@ static int initiate_socket_connection(SOCKET_IO_INSTANCE* socket_io_instance)
             addrInfoUn.sun_family = AF_UNIX;
             // No need to add NULL terminator due to the above memset
             (void)memcpy(addrInfoUn.sun_path, socket_io_instance->hostname, hostname_len);
-
-            connect_addr = (struct sockaddr*)&addrInfoUn;
-            connect_addr_len = sizeof(addrInfoUn);
+            
+            addr->ai_addrlen = sizeof(addrInfoUn);
+            addr->ai_addr = (struct sockaddr*)&addrInfoUn;
+            addr->ai_family = AF_UNIX;
+            addr->ai_socktype = SOCK_STREAM;
+            addr->ai_protocol = 0;
             result = 0;
         }
     }
+
+    socket_io_instance->socket = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
+
+    if (socket_io_instance->socket < SOCKET_SUCCESS)
+    {
+        LogError("Failure: socket create failure %d.", socket_io_instance->socket);
+        result = MU_FAILURE;
+    }
+#ifndef __APPLE__
+    else if (socket_io_instance->target_mac_address != NULL &&
+                set_target_network_interface(socket_io_instance->socket, socket_io_instance->target_mac_address) != 0)
+    {
+        LogError("Failure: failed selecting target network interface (MACADDR=%s).", socket_io_instance->target_mac_address);
+        result = MU_FAILURE;
+    }
+#endif //__APPLE__
 
     if(result == 0)
     {
@@ -347,7 +362,8 @@ static int initiate_socket_connection(SOCKET_IO_INSTANCE* socket_io_instance)
         }
         else
         {
-            result = connect(socket_io_instance->socket, connect_addr, connect_addr_len);
+            result = connect(socket_io_instance->socket, addr->ai_addr, addr->ai_addrlen);
+            
             if ((result != 0) && (errno != EINPROGRESS))
             {
                 LogError("Failure: connect failure %d.", errno);
@@ -362,6 +378,15 @@ static int initiate_socket_connection(SOCKET_IO_INSTANCE* socket_io_instance)
                     socket_io_instance->on_io_open_complete(socket_io_instance->on_io_open_complete_context, IO_OPEN_OK /*: IO_OPEN_ERROR*/);
                 }
             }
+        }
+
+        if (result != 0)
+        {
+            if (socket_io_instance->socket >= SOCKET_SUCCESS)
+            {
+                close(socket_io_instance->socket);
+            }
+            socket_io_instance->socket = INVALID_SOCKET;
         }
     }
 
